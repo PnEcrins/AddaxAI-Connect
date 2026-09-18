@@ -28,6 +28,7 @@ RUN pip check
 
 # Copy API code
 COPY services/api .
+RUN chmod +x entrypoint.sh
 
 # Copy scripts directory (for superuser creation, etc.)
 COPY scripts /app/scripts
@@ -46,5 +47,7 @@ RUN --mount=type=bind,source=.git,target=/app/.git \
 # Overridable per server through UVICORN_WORKERS in .env, because a box
 # running the ML workers has less memory to spare than a demo box.
 # `sh -c` with `exec` so the variable expands and uvicorn still receives
-# SIGTERM directly, which a plain shell-form CMD would swallow.
+# SIGTERM directly, which a plain shell-form CMD would swallow. entrypoint.sh
+# runs migrations first, then `exec "$@"`s into this same command.
+ENTRYPOINT ["./entrypoint.sh"]
 CMD ["sh", "-c", "exec uvicorn main:app --host 0.0.0.0 --port 8000 --workers ${UVICORN_WORKERS:-2}"]

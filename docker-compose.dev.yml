@@ -1,0 +1,131 @@
+# Local development overlay. Builds every service from source instead of
+# pulling a pre-built image, and mounts the source tree into each container
+# so edits show up without rebuilding. The opposite of
+# docker-compose.selfhost.yml, which needs no source code at all.
+#
+# Usage (no docker-compose.selfhost.prod.yml — this never needs TLS):
+#   docker compose -f docker-compose.selfhost.yml -f docker-compose.dev.yml up --build
+#
+# Postgres/Redis/MinIO are unchanged from the base file (same named Docker
+# volumes), so dev data persists across restarts the same way. This is the
+# only file in the set that bind-mounts local paths — the base file and its
+# prod overlay never do.
+#
+# For pure frontend UI work, DEVELOPERS.md's "Frontend UI development loop"
+# (plain `npm run dev` on the host against a remote dev server) hot-reloads
+# faster than this container does and is usually the better choice. The
+# frontend service below is for when you want the whole stack local.
+services:
+  api:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    environment:
+      ENVIRONMENT: development
+    # The base file publishes no port at all, so this is a plain addition,
+    # not an override. Every interface, so the API is reachable from
+    # another device on the LAN (phone/tablet testing). The frontend
+    # container's Vite dev server proxy doesn't depend on this at all — it
+    # reaches the API over the docker network by service name (api:8000).
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./services/api:/app
+      - ./shared:/shared
+      - ./scripts:/app/scripts
+      - ./VERSION:/app/VERSION:ro
+      - ./data/uploads:/uploads
+      - ./data/project-images:/app/project-images
+      - ./data/reference-images:/app/reference-images
+    # --reload watches /app; edits under services/api take effect without a
+    # container restart. Single worker: --reload and multiple uvicorn
+    # workers don't mix.
+    command:
+      ["sh", "-c", "exec uvicorn main:app --host 0.0.0.0 --port 8000 --reload"]
+
+  bulk-upload:
+    build:
+      context: .
+      dockerfile: services/bulk-upload/Dockerfile
+    environment:
+      ENVIRONMENT: development
+    volumes:
+      - ./services/bulk-upload:/app
+      - ./services/ingestion:/ingestion_lib
+      - ./shared:/shared
+
+  detection:
+    build:
+      context: .
+      dockerfile: services/detection/Dockerfile
+    volumes:
+      - ./services/detection:/app
+      - ./shared:/shared
+      - ./models:/models
+
+  classification-deepfaune:
+    build:
+      context: .
+      dockerfile: services/classification-deepfaune/Dockerfile
+    volumes:
+      - ./services/classification-deepfaune:/app
+      - ./shared:/shared
+      - ./models:/models
+
+  classification-speciesnet:
+    build:
+      context: .
+      dockerfile: services/classification-speciesnet/Dockerfile
+    volumes:
+      - ./services/classification-speciesnet:/app
+      - ./shared:/shared
+      - ./models:/models
+
+  notifications:
+    build:
+      context: .
+      dockerfile: services/notifications/Dockerfile
+    environment:
+      ENVIRONMENT: development
+    volumes:
+      - ./services/notifications:/app
+      - ./shared:/shared
+
+  notifications-email:
+    build:
+      context: .
+      dockerfile: services/notifications-email/Dockerfile
+    environment:
+      ENVIRONMENT: development
+    volumes:
+      - ./services/notifications-email:/app
+      - ./shared:/app/shared
+
+  # minio-init's entrypoint.sh is a few lines and rarely changes; rebuilding
+  # on `--build` is cheap enough that it isn't worth a bind mount here too.
+  minio-init:
+    build:
+      context: .
+      dockerfile: services/minio-init/Dockerfile
+
+  # Runs the Vite dev server instead of the built nginx image, so edits
+  # under services/frontend/src hot-reload. Use http://localhost:5173.
+  frontend:
+    image: node:22-alpine
+    working_dir: /app
+    command:
+      ["sh", "-c", "npm install && npm run dev -- --host 0.0.0.0 --port 5173"]
+    # Every interface, so it's reachable from another device on the LAN too.
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./services/frontend:/app
+      # Anonymous volume so the container's own (Linux) node_modules isn't
+      # shadowed by whatever host OS installed under the bind mount above.
+      - /app/node_modules
+    environment:
+      ENVIRONMENT: development
+
+  postgres:
+    ports:
+      - 5433:5432

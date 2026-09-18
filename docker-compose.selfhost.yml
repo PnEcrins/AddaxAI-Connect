@@ -1,0 +1,364 @@
+# Self-hosted base stack. Deliberately has no `build:` and no bind mount of
+# any local directory — every service comes from a pre-built image and all
+# persistent state lives in named Docker volumes, so this file plus .env is
+# enough to run the stack on a server that never cloned the repo. Only
+# docker-compose.dev.yml mounts local paths (the source tree, for live
+# edits).
+#
+# Each service reads its own IMAGE_* variable from .env (full reference,
+# registry + tag included, e.g. ghcr.io/you/addaxai-connect-api:latest).
+# Build and tag them all with scripts/build-selfhost-images.sh, and push
+# with its --push flag once IMAGE_* point at a real registry.
+#
+# No reverse proxy or TLS here — see docker-compose.selfhost.prod.yml for
+# Traefik + Let's Encrypt, applied as an overlay:
+#   docker compose -f docker-compose.selfhost.yml -f docker-compose.selfhost.prod.yml up -d
+# For local development with the code mounted live instead of baked into an
+# image, use docker-compose.dev.yml instead of this file.
+services:
+  # PostgreSQL Database with PostGIS
+  postgres:
+    image: postgis/postgis:15-3.3
+    container_name: addaxai-postgres
+    restart: unless-stopped
+    profiles: [deepfaune, speciesnet]
+    command: >
+      postgres
+      -c jit=off
+      -c work_mem=32MB
+      -c random_page_cost=1.1
+      -c effective_io_concurrency=200
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - addaxai-network
+
+  # Redis Message Queue
+  redis:
+    image: redis:7-alpine
+    container_name: addaxai-redis
+    restart: unless-stopped
+    profiles: [deepfaune, speciesnet]
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - addaxai-network
+
+  # MinIO Object Storage. Bound to localhost: images go out through the
+  # authenticated /api/images endpoints, not a public MinIO URL.
+  minio:
+    image: quay.io/minio/minio:latest
+    container_name: addaxai-minio
+    restart: unless-stopped
+    profiles: [deepfaune, speciesnet]
+    command: server /data --console-address ":9001"
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio_data:/data
+      - project_images:/host/project-images
+      - reference_images:/host/reference-images
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - addaxai-network
+
+  # MinIO bucket init. Built from services/minio-init/Dockerfile instead of
+  # bind-mounting entrypoint.sh, which is what used to make this the one
+  # service in the stack that could not run without a checkout of the repo.
+  minio-init:
+    image: ${IMAGE_MINIO_INIT}
+    container_name: addaxai-minio-init
+    profiles: [deepfaune, speciesnet]
+    depends_on:
+      - minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      COLD_TIER_ENABLED: "false"
+    networks:
+      - addaxai-network
+
+  # FastAPI Backend. Applies migrations itself on every start via
+  # entrypoint.sh before uvicorn takes requests — see services/api/Dockerfile.
+  api:
+    image: ${IMAGE_API}
+    container_name: addaxai-api
+    restart: unless-stopped
+    profiles: [deepfaune, speciesnet]
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      MINIO_ENDPOINT: minio:9000
+      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT}
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET}
+      CORS_ORIGINS: ${CORS_ORIGINS}
+      MAIL_SERVER: ${MAIL_SERVER}
+      MAIL_PORT: ${MAIL_PORT}
+      MAIL_USERNAME: ${MAIL_USERNAME}
+      MAIL_PASSWORD: ${MAIL_PASSWORD}
+      MAIL_FROM: ${MAIL_FROM}
+      DOMAIN_NAME: ${DOMAIN_NAME}
+      DEMO_MODE: "false"
+      UVICORN_WORKERS: ${UVICORN_WORKERS:-2}
+      CLASSIFICATION_MODEL: ${CLASSIFICATION_MODEL:-deepfaune}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      DEV_NOTIFY_EMAILS: ${DEV_NOTIFY_EMAILS:-}
+      DEV_NOTIFY_CHAT_IDS: ${DEV_NOTIFY_CHAT_IDS:-}
+      BACKUP_ENABLED: "false"
+      # No FTPS server in this stack (manual upload only from the UI). Left
+      # at defaults so the devtools test-upload endpoint degrades gracefully
+      # instead of failing to read an env var.
+      FTPS_UPLOAD_DIR: /uploads
+    # No published port. This file is never run by itself — it's always
+    # paired with docker-compose.selfhost.prod.yml (Traefik reaches this
+    # container over the docker network, no host port needed) or
+    # docker-compose.dev.yml (which publishes one for local access).
+    volumes:
+      - uploads_data:/uploads
+      - project_images:/app/project-images
+      - reference_images:/app/reference-images
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - addaxai-network
+
+  # Bulk-upload worker. Drains jobs created by the UI's manual upload flow
+  # (SD-card import etc.) into the live detection/classification pipeline.
+  # This is the only ingestion path in this stack — there is no FTPS server.
+  bulk-upload:
+    image: ${IMAGE_BULK_UPLOAD}
+    container_name: addaxai-bulk-upload
+    restart: unless-stopped
+    profiles: [deepfaune, speciesnet]
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - addaxai-network
+
+  # Detection Worker
+  detection:
+    image: ${IMAGE_DETECTION}
+    container_name: addaxai-detection
+    restart: unless-stopped
+    profiles: [deepfaune, speciesnet]
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      DETECTION_MODEL_PATH: /models/detection/md_v1000.0.0-redwood.pt
+      DETECTION_MODEL_URL: https://github.com/agentmorris/MegaDetector/releases/download/v1000.0/md_v1000.0.0-redwood.pt
+      CONFIDENCE_THRESHOLD: 0.1
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+    volumes:
+      - models_data:/models
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - addaxai-network
+
+  # DeepFaune Classification Worker (38 European species)
+  classification-deepfaune:
+    image: ${IMAGE_CLASSIFICATION_DEEPFAUNE}
+    container_name: addaxai-classification-deepfaune
+    restart: unless-stopped
+    profiles: [deepfaune]
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      CLASSIFICATION_MODEL_PATH: /models/classification/deepfaune-vit_large_patch14_dinov2.lvd142m.v4.pt
+      CLASSIFICATION_MODEL_URL: https://huggingface.co/Addax-Data-Science/Deepfaune_v1.4/resolve/main/deepfaune-vit_large_patch14_dinov2.lvd142m.v4.pt?download=true
+      CROP_RESOLUTION: 182
+      CONFIDENCE_THRESHOLD: 0.0
+      TOP_N_PREDICTIONS: 1
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+    volumes:
+      - models_data:/models
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - addaxai-network
+
+  # SpeciesNet Classification Worker (2498 species, global coverage)
+  classification-speciesnet:
+    image: ${IMAGE_CLASSIFICATION_SPECIESNET}
+    container_name: addaxai-classification-speciesnet
+    restart: unless-stopped
+    profiles: [speciesnet]
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      SPECIESNET_MODEL_DIR: /models/classification-speciesnet
+      SPECIESNET_HF_REPO: Addax-Data-Science/SPECIESNET-v4-0-1-A-v1
+      CONFIDENCE_THRESHOLD: 0.0
+      TOP_N_PREDICTIONS: 1
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+    volumes:
+      - models_data:/models
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - addaxai-network
+
+  # Notifications Service - core notification coordinator
+  notifications:
+    image: ${IMAGE_NOTIFICATIONS}
+    container_name: addaxai-notifications
+    restart: unless-stopped
+    profiles: [deepfaune, speciesnet]
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      DOMAIN_NAME: ${DOMAIN_NAME}
+      CLASSIFICATION_MODEL: ${CLASSIFICATION_MODEL:-deepfaune}
+      DISK_ALERT_THRESHOLDS: ${DISK_ALERT_THRESHOLDS:-80,90,95}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      BACKUP_ENABLED: "false"
+      COLD_TIER_ENABLED: "false"
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+    volumes:
+      - /:/host:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - addaxai-network
+
+  # Email Notifications Worker
+  notifications-email:
+    image: ${IMAGE_NOTIFICATIONS_EMAIL}
+    container_name: addaxai-notifications-email
+    restart: unless-stopped
+    profiles: [deepfaune, speciesnet]
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      MAIL_SERVER: ${MAIL_SERVER}
+      MAIL_PORT: ${MAIL_PORT}
+      MAIL_USERNAME: ${MAIL_USERNAME}
+      MAIL_PASSWORD: ${MAIL_PASSWORD}
+      MAIL_FROM: ${MAIL_FROM}
+      DOMAIN_NAME: ${DOMAIN_NAME}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      DEV_NOTIFY_EMAILS: ${DEV_NOTIFY_EMAILS:-}
+      DEV_NOTIFY_CHAT_IDS: ${DEV_NOTIFY_CHAT_IDS:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      notifications:
+        condition: service_started
+    networks:
+      - addaxai-network
+
+  # Frontend
+  frontend:
+    image: ${IMAGE_FRONTEND}
+    container_name: addaxai-frontend
+    restart: unless-stopped
+    profiles: [deepfaune, speciesnet]
+    # No published port, see the api service above for why.
+    volumes:
+      - project_images:/usr/share/nginx/html/project-images
+      - reference_images:/usr/share/nginx/html/reference-images
+    depends_on:
+      - api
+    networks:
+      - addaxai-network
+
+networks:
+  addaxai-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+  uploads_data:
+  models_data:
+  project_images:
+  reference_images:

@@ -1,0 +1,59 @@
+# TLS overlay. Adds Traefik (reverse proxy + automatic Let's Encrypt cert)
+# in front of the base stack and routes api/frontend through it.
+#
+# Usage:
+#   docker compose -f docker-compose.selfhost.yml -f docker-compose.selfhost.prod.yml up -d
+#
+# DOMAIN_NAME must already resolve to this server's public IP before you
+# start it, and ports 80/443 must be free on the host — the ACME HTTP-01
+# challenge needs port 80.
+services:
+  traefik:
+    image: traefik:v3.3
+    container_name: addaxai-traefik
+    restart: unless-stopped
+    # No `profiles:` key, so this always starts once the overlay is applied,
+    # regardless of which classification profile (deepfaune/speciesnet) is
+    # active.
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      # Plain HTTP always redirects to HTTPS. The ACME HTTP-01 challenge
+      # itself is exempted automatically by Traefik before this applies.
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
+      - "--certificatesresolvers.letsencrypt.acme.email=${LETSENCRYPT_EMAIL}"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./data/traefik:/letsencrypt
+    networks:
+      - addaxai-network
+
+  api:
+    labels:
+      - "traefik.enable=true"
+      # Everything the SPA calls on the API host, matched ahead of the
+      # frontend's catch-all router below.
+      - "traefik.http.routers.addaxai-api.rule=Host(`${DOMAIN_NAME}`) && (PathPrefix(`/api`) || PathPrefix(`/auth`) || PathPrefix(`/users`) || PathPrefix(`/ws`) || Path(`/health`))"
+      - "traefik.http.routers.addaxai-api.entrypoints=websecure"
+      - "traefik.http.routers.addaxai-api.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.addaxai-api.priority=10"
+      - "traefik.http.services.addaxai-api.loadbalancer.server.port=8000"
+
+  frontend:
+    labels:
+      - "traefik.enable=true"
+      # Catch-all, lower priority than the api router above.
+      - "traefik.http.routers.addaxai-frontend.rule=Host(`${DOMAIN_NAME}`)"
+      - "traefik.http.routers.addaxai-frontend.entrypoints=websecure"
+      - "traefik.http.routers.addaxai-frontend.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.addaxai-frontend.priority=1"
+      - "traefik.http.services.addaxai-frontend.loadbalancer.server.port=80"

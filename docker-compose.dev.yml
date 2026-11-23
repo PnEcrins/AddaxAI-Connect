@@ -63,21 +63,12 @@ services:
       - ./shared:/shared
       - ./models:/models
 
-  classification-deepfaune:
+  classification:
     build:
       context: .
-      dockerfile: services/classification-deepfaune/Dockerfile
+      dockerfile: services/classification/Dockerfile
     volumes:
-      - ./services/classification-deepfaune:/app
-      - ./shared:/shared
-      - ./models:/models
-
-  classification-speciesnet:
-    build:
-      context: .
-      dockerfile: services/classification-speciesnet/Dockerfile
-    volumes:
-      - ./services/classification-speciesnet:/app
+      - ./services/classification:/app
       - ./shared:/shared
       - ./models:/models
 

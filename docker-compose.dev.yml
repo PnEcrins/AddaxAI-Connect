@@ -101,12 +101,24 @@ services:
       - ./services/notifications-email:/app
       - ./shared:/app/shared
 
-  # minio-init's entrypoint.sh is a few lines and rarely changes; rebuilding
-  # on `--build` is cheap enough that it isn't worth a bind mount here too.
+  # MinIO built from source, as upstream does. minio-init runs from the same
+  # image with entrypoint.sh bind-mounted (upstream's setup), rather than
+  # from services/minio-init/Dockerfile, whose FROM would need the minio
+  # image to exist before compose builds it. The build block is repeated on
+  # both so compose builds instead of pulling, whichever starts first.
+  minio:
+    build:
+      context: .
+      dockerfile: services/minio/Dockerfile
+
   minio-init:
     build:
       context: .
-      dockerfile: services/minio-init/Dockerfile
+      dockerfile: services/minio/Dockerfile
+    image: ${IMAGE_MINIO}
+    volumes:
+      - ./services/minio-init/entrypoint.sh:/entrypoint.sh:ro
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
 
   # Runs the Vite dev server instead of the built nginx image, so edits
   # under services/frontend/src hot-reload. Use http://localhost:5173.

@@ -61,8 +61,10 @@ services:
 
   # MinIO Object Storage. Bound to localhost: images go out through the
   # authenticated /api/images endpoints, not a public MinIO URL.
+  # Built from source (services/minio/Dockerfile), like upstream: MinIO no
+  # longer publishes images.
   minio:
-    image: quay.io/minio/minio:latest
+    image: ${IMAGE_MINIO}
     container_name: addaxai-minio
     restart: unless-stopped
     profiles: [deepfaune, speciesnet]
@@ -85,9 +87,10 @@ services:
     networks:
       - addaxai-network
 
-  # MinIO bucket init. Built from services/minio-init/Dockerfile instead of
-  # bind-mounting entrypoint.sh, which is what used to make this the one
-  # service in the stack that could not run without a checkout of the repo.
+  # MinIO bucket init. Built from services/minio-init/Dockerfile (the MinIO
+  # image above + entrypoint.sh baked in) instead of bind-mounting
+  # entrypoint.sh, which is what used to make this the one service in the
+  # stack that could not run without a checkout of the repo.
   minio-init:
     image: ${IMAGE_MINIO_INIT}
     container_name: addaxai-minio-init

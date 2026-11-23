@@ -13,8 +13,7 @@ services:
     container_name: addaxai-traefik
     restart: unless-stopped
     # No `profiles:` key, so this always starts once the overlay is applied,
-    # regardless of which classification profile (deepfaune/speciesnet) is
-    # active.
+    # whichever profile is active.
     command:
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"

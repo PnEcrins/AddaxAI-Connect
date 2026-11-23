@@ -21,7 +21,7 @@ services:
     image: postgis/postgis:15-3.3
     container_name: addaxai-postgres
     restart: unless-stopped
-    profiles: [deepfaune, speciesnet]
+    profiles: [full]
     command: >
       postgres
       -c jit=off
@@ -47,7 +47,7 @@ services:
     image: redis:7-alpine
     container_name: addaxai-redis
     restart: unless-stopped
-    profiles: [deepfaune, speciesnet]
+    profiles: [full]
     command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
     volumes:
       - redis_data:/data
@@ -67,7 +67,7 @@ services:
     image: ${IMAGE_MINIO}
     container_name: addaxai-minio
     restart: unless-stopped
-    profiles: [deepfaune, speciesnet]
+    profiles: [full]
     command: server /data --console-address ":9001"
     ports:
       - "127.0.0.1:9000:9000"
@@ -94,7 +94,7 @@ services:
   minio-init:
     image: ${IMAGE_MINIO_INIT}
     container_name: addaxai-minio-init
-    profiles: [deepfaune, speciesnet]
+    profiles: [full]
     depends_on:
       - minio
     environment:
@@ -110,7 +110,7 @@ services:
     image: ${IMAGE_API}
     container_name: addaxai-api
     restart: unless-stopped
-    profiles: [deepfaune, speciesnet]
+    profiles: [full]
     environment:
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL}
@@ -128,7 +128,6 @@ services:
       DOMAIN_NAME: ${DOMAIN_NAME}
       DEMO_MODE: "false"
       UVICORN_WORKERS: ${UVICORN_WORKERS:-2}
-      CLASSIFICATION_MODEL: ${CLASSIFICATION_MODEL:-deepfaune}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LOG_FORMAT: ${LOG_FORMAT:-json}
       ENVIRONMENT: ${ENVIRONMENT:-production}
@@ -164,7 +163,7 @@ services:
     image: ${IMAGE_BULK_UPLOAD}
     container_name: addaxai-bulk-upload
     restart: unless-stopped
-    profiles: [deepfaune, speciesnet]
+    profiles: [full]
     environment:
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL}
@@ -189,7 +188,7 @@ services:
     image: ${IMAGE_DETECTION}
     container_name: addaxai-detection
     restart: unless-stopped
-    profiles: [deepfaune, speciesnet]
+    profiles: [full]
     environment:
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL}
@@ -213,53 +212,21 @@ services:
     networks:
       - addaxai-network
 
-  # DeepFaune Classification Worker (38 European species)
-  classification-deepfaune:
-    image: ${IMAGE_CLASSIFICATION_DEEPFAUNE}
-    container_name: addaxai-classification-deepfaune
+  # Classification Worker. Holds every model the server's projects use and
+  # downloads each one from HuggingFace on first use into models_data, see
+  # services/classification/registry.py.
+  classification:
+    image: ${IMAGE_CLASSIFICATION}
+    container_name: addaxai-classification
     restart: unless-stopped
-    profiles: [deepfaune]
+    profiles: [full]
     environment:
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL}
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
-      CLASSIFICATION_MODEL_PATH: /models/classification/deepfaune-vit_large_patch14_dinov2.lvd142m.v4.pt
-      CLASSIFICATION_MODEL_URL: https://huggingface.co/Addax-Data-Science/Deepfaune_v1.4/resolve/main/deepfaune-vit_large_patch14_dinov2.lvd142m.v4.pt?download=true
-      CROP_RESOLUTION: 182
-      CONFIDENCE_THRESHOLD: 0.0
-      TOP_N_PREDICTIONS: 1
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      LOG_FORMAT: ${LOG_FORMAT:-json}
-    volumes:
-      - models_data:/models
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
-    networks:
-      - addaxai-network
-
-  # SpeciesNet Classification Worker (2498 species, global coverage)
-  classification-speciesnet:
-    image: ${IMAGE_CLASSIFICATION_SPECIESNET}
-    container_name: addaxai-classification-speciesnet
-    restart: unless-stopped
-    profiles: [speciesnet]
-    environment:
-      DATABASE_URL: ${DATABASE_URL}
-      REDIS_URL: ${REDIS_URL}
-      MINIO_ENDPOINT: minio:9000
-      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
-      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
-      SPECIESNET_MODEL_DIR: /models/classification-speciesnet
-      SPECIESNET_HF_REPO: Addax-Data-Science/SPECIESNET-v4-0-1-A-v1
-      CONFIDENCE_THRESHOLD: 0.0
-      TOP_N_PREDICTIONS: 1
+      MODELS_DIR: /models/classification
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LOG_FORMAT: ${LOG_FORMAT:-json}
     volumes:
@@ -279,7 +246,7 @@ services:
     image: ${IMAGE_NOTIFICATIONS}
     container_name: addaxai-notifications
     restart: unless-stopped
-    profiles: [deepfaune, speciesnet]
+    profiles: [full]
     environment:
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL}
@@ -287,7 +254,6 @@ services:
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
       DOMAIN_NAME: ${DOMAIN_NAME}
-      CLASSIFICATION_MODEL: ${CLASSIFICATION_MODEL:-deepfaune}
       DISK_ALERT_THRESHOLDS: ${DISK_ALERT_THRESHOLDS:-80,90,95}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-}
       BACKUP_ENABLED: "false"
@@ -310,7 +276,7 @@ services:
     image: ${IMAGE_NOTIFICATIONS_EMAIL}
     container_name: addaxai-notifications-email
     restart: unless-stopped
-    profiles: [deepfaune, speciesnet]
+    profiles: [full]
     environment:
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL}
@@ -343,7 +309,7 @@ services:
     image: ${IMAGE_FRONTEND}
     container_name: addaxai-frontend
     restart: unless-stopped
-    profiles: [deepfaune, speciesnet]
+    profiles: [full]
     # No published port, see the api service above for why.
     volumes:
       - project_images:/usr/share/nginx/html/project-images

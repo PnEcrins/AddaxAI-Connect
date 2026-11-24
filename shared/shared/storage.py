@@ -58,7 +58,7 @@ def _get_boto_client():
     if _shared_client is None:
         _shared_client = boto3.client(
             's3',
-            endpoint_url=f"http://{settings.minio_endpoint}",
+            endpoint_url=f"{'https' if settings.minio_secure else 'http'}://{settings.minio_endpoint}",
             aws_access_key_id=settings.minio_access_key,
             aws_secret_access_key=settings.minio_secret_key,
             config=Config(signature_version='s3v4', s3={'addressing_style': 'path'}),

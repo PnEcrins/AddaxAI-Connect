@@ -6,7 +6,7 @@
 # Usage (no docker-compose.selfhost.prod.yml — this never needs TLS):
 #   docker compose -f docker-compose.selfhost.yml -f docker-compose.dev.yml up --build
 #
-# Postgres/Redis/MinIO are unchanged from the base file (same named Docker
+# Postgres/Redis are unchanged from the base file (same named Docker
 # volumes), so dev data persists across restarts the same way. This is the
 # only file in the set that bind-mounts local paths — the base file and its
 # prod overlay never do.
@@ -17,6 +17,9 @@
 # frontend service below is for when you want the whole stack local.
 services:
   api:
+    depends_on:
+      garage-init:
+        condition: service_completed_successfully
     build:
       context: .
       dockerfile: services/api/Dockerfile
@@ -44,6 +47,9 @@ services:
       ["sh", "-c", "exec uvicorn main:app --host 0.0.0.0 --port 8000 --reload"]
 
   bulk-upload:
+    depends_on:
+      garage-init:
+        condition: service_completed_successfully
     build:
       context: .
       dockerfile: services/bulk-upload/Dockerfile
@@ -55,6 +61,9 @@ services:
       - ./shared:/shared
 
   detection:
+    depends_on:
+      garage-init:
+        condition: service_completed_successfully
     build:
       context: .
       dockerfile: services/detection/Dockerfile
@@ -64,6 +73,9 @@ services:
       - ./models:/models
 
   classification:
+    depends_on:
+      garage-init:
+        condition: service_completed_successfully
     build:
       context: .
       dockerfile: services/classification/Dockerfile
@@ -92,24 +104,58 @@ services:
       - ./services/notifications-email:/app
       - ./shared:/app/shared
 
-  # MinIO built from source, as upstream does. minio-init runs from the same
-  # image with entrypoint.sh bind-mounted (upstream's setup), rather than
-  # from services/minio-init/Dockerfile, whose FROM would need the minio
-  # image to exist before compose builds it. The build block is repeated on
-  # both so compose builds instead of pulling, whichever starts first.
-  minio:
-    build:
-      context: .
-      dockerfile: services/minio/Dockerfile
-
-  minio-init:
-    build:
-      context: .
-      dockerfile: services/minio/Dockerfile
-    image: ${IMAGE_MINIO}
+  # Local object storage. The base file has none (production points at an
+  # external Garage, see garage/), so dev runs the same Garage locally. In
+  # .env: MINIO_ENDPOINT=garage:3900, MINIO_SECURE=false, GARAGE_RPC_SECRET,
+  # GARAGE_ADMIN_TOKEN, and MINIO_ROOT_USER / MINIO_ROOT_PASSWORD in Garage's
+  # key format (GK + 24 hex / 64 hex), which garage-init imports.
+  garage:
+    image: dxflrs/garage:v2.5.0
+    container_name: addaxai-garage
+    restart: unless-stopped
+    profiles: [full]
+    environment:
+      GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET}
+      GARAGE_ADMIN_TOKEN: ${GARAGE_ADMIN_TOKEN}
+    ports:
+      - "127.0.0.1:3900:3900"
     volumes:
-      - ./services/minio-init/entrypoint.sh:/entrypoint.sh:ro
-    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+      - ./garage/garage.toml:/etc/garage.toml:ro
+      - garage_meta:/var/lib/garage/meta
+      - garage_data:/var/lib/garage/data
+    healthcheck:
+      test: ["CMD", "/garage", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - addaxai-network
+
+  # garage/init.sh in a container. Shares garage's network namespace, so
+  # the CLI (which also needs the node key from the meta volume) and the S3
+  # API are on 127.0.0.1, as on the Garage server.
+  garage-init:
+    build:
+      context: garage
+      dockerfile: Dockerfile.init
+    image: addaxai-connect-garage-init:dev
+    container_name: addaxai-garage-init
+    profiles: [full]
+    network_mode: service:garage
+    depends_on:
+      garage:
+        condition: service_healthy
+    environment:
+      GARAGE_INIT_IN_CONTAINER: "1"
+      GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET}
+      GARAGE_CAPACITY: 10G
+      GARAGE_KEY_ID: ${MINIO_ROOT_USER}
+      GARAGE_KEY_SECRET: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - ./garage/garage.toml:/etc/garage.toml:ro
+      - ./garage/init.sh:/init.sh:ro
+      - garage_meta:/var/lib/garage/meta:ro
+    entrypoint: ["/bin/sh", "/init.sh"]
 
   # Runs the Vite dev server instead of the built nginx image, so edits
   # under services/frontend/src hot-reload. Use http://localhost:5173.
@@ -132,3 +178,7 @@ services:
   postgres:
     ports:
       - 5433:5432
+
+volumes:
+  garage_meta:
+  garage_data:

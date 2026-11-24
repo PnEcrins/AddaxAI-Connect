@@ -24,6 +24,7 @@ class ClassificationSettings(BaseSettings):
     minio_endpoint: str
     minio_access_key: str
     minio_secret_key: str
+    minio_secure: bool = False
 
     # Where the models live, one folder per catalog id (see registry.py)
     models_dir: str = "/models/classification"

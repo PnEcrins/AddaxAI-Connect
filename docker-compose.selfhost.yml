@@ -10,6 +10,11 @@
 # Build and tag them all with scripts/build-selfhost-images.sh, and push
 # with its --push flag once IMAGE_* point at a real registry.
 #
+# No object storage here: the services talk to an external S3 server,
+# normally the Garage stack in garage/ run on its own host, at
+# MINIO_ENDPOINT (https unless MINIO_SECURE=false). docker-compose.dev.yml
+# adds a local MinIO for development.
+#
 # No reverse proxy or TLS here — see docker-compose.selfhost.prod.yml for
 # Traefik + Let's Encrypt, applied as an overlay:
 #   docker compose -f docker-compose.selfhost.yml -f docker-compose.selfhost.prod.yml up -d
@@ -59,51 +64,6 @@ services:
     networks:
       - addaxai-network
 
-  # MinIO Object Storage. Bound to localhost: images go out through the
-  # authenticated /api/images endpoints, not a public MinIO URL.
-  # Built from source (services/minio/Dockerfile), like upstream: MinIO no
-  # longer publishes images.
-  minio:
-    image: ${IMAGE_MINIO}
-    container_name: addaxai-minio
-    restart: unless-stopped
-    profiles: [full]
-    command: server /data --console-address ":9001"
-    ports:
-      - "127.0.0.1:9000:9000"
-      - "127.0.0.1:9001:9001"
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-    volumes:
-      - minio_data:/data
-      - project_images:/host/project-images
-      - reference_images:/host/reference-images
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 30s
-      timeout: 20s
-      retries: 3
-    networks:
-      - addaxai-network
-
-  # MinIO bucket init. Built from services/minio-init/Dockerfile (the MinIO
-  # image above + entrypoint.sh baked in) instead of bind-mounting
-  # entrypoint.sh, which is what used to make this the one service in the
-  # stack that could not run without a checkout of the repo.
-  minio-init:
-    image: ${IMAGE_MINIO_INIT}
-    container_name: addaxai-minio-init
-    profiles: [full]
-    depends_on:
-      - minio
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-      COLD_TIER_ENABLED: "false"
-    networks:
-      - addaxai-network
-
   # FastAPI Backend. Applies migrations itself on every start via
   # entrypoint.sh before uvicorn takes requests — see services/api/Dockerfile.
   api:
@@ -114,7 +74,8 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL}
-      MINIO_ENDPOINT: minio:9000
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      MINIO_SECURE: ${MINIO_SECURE:-true}
       MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT}
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
@@ -151,8 +112,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      minio:
-        condition: service_healthy
     networks:
       - addaxai-network
 
@@ -167,7 +126,8 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL}
-      MINIO_ENDPOINT: minio:9000
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      MINIO_SECURE: ${MINIO_SECURE:-true}
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -177,8 +137,6 @@ services:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_healthy
-      minio:
         condition: service_healthy
     networks:
       - addaxai-network
@@ -192,7 +150,8 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL}
-      MINIO_ENDPOINT: minio:9000
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      MINIO_SECURE: ${MINIO_SECURE:-true}
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
       DETECTION_MODEL_PATH: /models/detection/md_v1000.0.0-redwood.pt
@@ -206,8 +165,6 @@ services:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_healthy
-      minio:
         condition: service_healthy
     networks:
       - addaxai-network
@@ -223,7 +180,8 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL}
-      MINIO_ENDPOINT: minio:9000
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      MINIO_SECURE: ${MINIO_SECURE:-true}
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
       MODELS_DIR: /models/classification
@@ -235,8 +193,6 @@ services:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_healthy
-      minio:
         condition: service_healthy
     networks:
       - addaxai-network
@@ -250,7 +206,8 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL}
-      MINIO_ENDPOINT: minio:9000
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      MINIO_SECURE: ${MINIO_SECURE:-true}
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
       DOMAIN_NAME: ${DOMAIN_NAME}
@@ -280,7 +237,8 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL}
-      MINIO_ENDPOINT: minio:9000
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      MINIO_SECURE: ${MINIO_SECURE:-true}
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
       MAIL_SERVER: ${MAIL_SERVER}
@@ -326,7 +284,6 @@ networks:
 volumes:
   postgres_data:
   redis_data:
-  minio_data:
   uploads_data:
   models_data:
   project_images:

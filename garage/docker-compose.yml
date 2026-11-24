@@ -1,0 +1,64 @@
+# Garage (S3-compatible storage), run on its own server in place of MinIO.
+#
+# Self-contained: copy this directory to the storage server, then
+#   cp .env.example .env   # fill in the values
+#   docker compose up -d
+#   ./init.sh              # layout, key, buckets, lifecycle (idempotent)
+#
+# Traefik terminates TLS for the S3 API on GARAGE_DOMAIN (Let's Encrypt
+# HTTP-01, same setup as docker-compose.selfhost.prod.yml): the domain must
+# resolve to this server and ports 80/443 must be free. The RPC (3901) and
+# admin (3903) ports are never published: single node, administered with
+# `docker compose exec`.
+services:
+  garage:
+    image: dxflrs/garage:v2.5.0
+    container_name: garage
+    restart: unless-stopped
+    environment:
+      GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET}
+      GARAGE_ADMIN_TOKEN: ${GARAGE_ADMIN_TOKEN}
+    volumes:
+      - ./garage.toml:/etc/garage.toml:ro
+      - garage_meta:/var/lib/garage/meta
+      - garage_data:/var/lib/garage/data
+    ports:
+      # Plain HTTP, localhost only: used by init.sh and local tooling.
+      - "127.0.0.1:3900:3900"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.garage-s3.rule=Host(`${GARAGE_DOMAIN}`)"
+      - "traefik.http.routers.garage-s3.entrypoints=websecure"
+      - "traefik.http.routers.garage-s3.tls.certresolver=letsencrypt"
+      - "traefik.http.services.garage-s3.loadbalancer.server.port=3900"
+
+  traefik:
+    image: traefik:v3.3
+    container_name: garage-traefik
+    restart: unless-stopped
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      # Traefik v3 cuts a request body after 60s by default, short for a
+      # large upload over a slow link.
+      - "--entrypoints.websecure.transport.respondingtimeouts.readtimeout=600s"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
+      - "--certificatesresolvers.letsencrypt.acme.email=${LETSENCRYPT_EMAIL}"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./data/traefik:/letsencrypt
+
+volumes:
+  garage_meta:
+  # Holds every image. Swap for a bind mount on the big disk if needed,
+  # e.g. /mnt/storage/garage:/var/lib/garage/data
+  garage_data:

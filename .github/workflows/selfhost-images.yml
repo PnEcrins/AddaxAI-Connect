@@ -1,0 +1,66 @@
+name: selfhost images
+
+# Builds the images docker-compose.selfhost.yml runs and pushes them to
+# ghcr.io/<owner>/<repo>-<service> (e.g. ghcr.io/pnecrins/addaxai-connect-api),
+# the same set as scripts/build-selfhost-images.sh.
+# On a merge to ecrins-integration: tags latest and the commit sha (to pin
+# or roll back a deploy). On a pull request to it: tag pr-<number>, to try
+# the branch on a server before merging. A PR from a fork gets a read-only
+# token, so its images are built (the build is checked) but not pushed.
+on:
+  push:
+    branches: [ecrins-integration]
+  pull_request:
+    branches: [ecrins-integration]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { service: api, context: ., dockerfile: services/api/Dockerfile }
+          - { service: bulk-upload, context: ., dockerfile: services/bulk-upload/Dockerfile }
+          - { service: detection, context: ., dockerfile: services/detection/Dockerfile }
+          - { service: classification, context: ., dockerfile: services/classification/Dockerfile }
+          - { service: notifications, context: ., dockerfile: services/notifications/Dockerfile }
+          - { service: notifications-email, context: ., dockerfile: services/notifications-email/Dockerfile }
+          - { service: frontend, context: services/frontend, dockerfile: services/frontend/Dockerfile }
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ghcr.io refuses upper case, and PnEcrins/AddaxAI-Connect has some:
+      # metadata-action lowercases the image name.
+      - uses: docker/metadata-action@v6
+        id: meta
+        with:
+          images: ghcr.io/${{ github.repository }}-${{ matrix.service }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.event_name != 'pull_request' }}
+            type=sha,format=long,prefix=,enable=${{ github.event_name != 'pull_request' }}
+            type=ref,event=pr
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}

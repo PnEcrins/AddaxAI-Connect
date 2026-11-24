@@ -37,7 +37,6 @@ fi
 # name:context:dockerfile:env_var, space separated. frontend's context is
 # its own directory (multi-stage npm build); every other service builds
 # from the repo root so the Dockerfile can COPY shared/ and scripts/.
-# minio must come before minio-init, which is built FROM it.
 services=(
   "api:.:services/api/Dockerfile:IMAGE_API"
   "bulk-upload:.:services/bulk-upload/Dockerfile:IMAGE_BULK_UPLOAD"
@@ -45,8 +44,6 @@ services=(
   "classification:.:services/classification/Dockerfile:IMAGE_CLASSIFICATION"
   "notifications:.:services/notifications/Dockerfile:IMAGE_NOTIFICATIONS"
   "notifications-email:.:services/notifications-email/Dockerfile:IMAGE_NOTIFICATIONS_EMAIL"
-  "minio:.:services/minio/Dockerfile:IMAGE_MINIO"
-  "minio-init:.:services/minio-init/Dockerfile:IMAGE_MINIO_INIT"
   "frontend:services/frontend:services/frontend/Dockerfile:IMAGE_FRONTEND"
 )
 
@@ -61,12 +58,8 @@ done
 
 for entry in "${services[@]}"; do
   IFS=':' read -r name context dockerfile env_var <<< "$entry"
-  build_args=()
-  if [ "$name" = "minio-init" ]; then
-    build_args+=(--build-arg "MINIO_IMAGE=${IMAGE_MINIO}")
-  fi
   echo "==> Building $name -> ${!env_var}"
-  docker build -f "$dockerfile" -t "${!env_var}" "${build_args[@]}" "$context"
+  docker build -f "$dockerfile" -t "${!env_var}" "$context"
 done
 
 if [ "$push" = true ]; then

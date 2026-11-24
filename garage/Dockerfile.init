@@ -1,0 +1,9 @@
+# Image for running init.sh inside a container (garage-init in
+# docker-compose.dev.yml): a shell, the garage CLI and the AWS CLI. The
+# garage image itself has no shell. Keep the tag in step with the garage
+# image in docker-compose.yml and docker-compose.dev.yml.
+FROM dxflrs/garage:v2.5.0 AS garage
+
+FROM alpine:3.22
+RUN apk add --no-cache aws-cli
+COPY --from=garage /garage /usr/local/bin/garage

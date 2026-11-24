@@ -1,7 +1,8 @@
 name: selfhost images
 
 # Builds the images docker-compose.selfhost.yml runs and pushes them to
-# ghcr.io/<owner>/<service>, the same set as scripts/build-selfhost-images.sh.
+# ghcr.io/<owner>/<repo>-<service> (e.g. ghcr.io/pnecrins/addaxai-connect-api),
+# the same set as scripts/build-selfhost-images.sh.
 # On a merge to ecrins-integration: tags latest and the commit sha (to pin
 # or roll back a deploy). On a pull request to it: tag pr-<number>, to try
 # the branch on a server before merging. A PR from a fork gets a read-only
@@ -43,11 +44,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # ghcr.io refuses upper case, and the owner (PnEcrins) has some.
+      # ghcr.io refuses upper case, and PnEcrins/AddaxAI-Connect has some:
+      # metadata-action lowercases the image name.
       - uses: docker/metadata-action@v6
         id: meta
         with:
-          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.service }}
+          images: ghcr.io/${{ github.repository }}-${{ matrix.service }}
           tags: |
             type=raw,value=latest,enable=${{ github.event_name != 'pull_request' }}
             type=sha,format=long,prefix=,enable=${{ github.event_name != 'pull_request' }}

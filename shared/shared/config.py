@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     mail_username: Optional[str] = None
     mail_password: Optional[str] = None
     mail_from: Optional[str] = None
+    # False only for a relay on the same host or Docker network that offers
+    # no usable TLS (e.g. a local Postfix reached by IP). See shared/smtp.py.
+    mail_tls: bool = True
     domain_name: Optional[str] = None  # For constructing verification links
     # False on a server deployed with enable_ssl: false. Decides http or
     # https in every link the server sends. See app_url.

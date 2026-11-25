@@ -51,7 +51,12 @@ def smtp_send_kwargs(settings: Settings) -> Dict[str, Any]:
             "empty for a server that needs no login"
         )
 
-    implicit_tls = settings.mail_port == 465
+    # MAIL_TLS=false turns encryption off for a trusted local relay, such as
+    # a Postfix on the Docker host reached by IP: no certificate can match an
+    # IP, so STARTTLS with verification would fail every send. Anything that
+    # goes over a real network keeps TLS (implicit on 465, STARTTLS otherwise).
+    tls = settings.mail_tls
+    implicit_tls = tls and settings.mail_port == 465
     return {
         "hostname": settings.mail_server,
         "port": settings.mail_port,
@@ -60,5 +65,5 @@ def smtp_send_kwargs(settings: Settings) -> Dict[str, Any]:
         # Google's relay wants a real name in EHLO, not the container id.
         "local_hostname": settings.domain_name or None,
         "use_tls": implicit_tls,
-        "start_tls": not implicit_tls,
+        "start_tls": tls and not implicit_tls,
     }

@@ -86,6 +86,9 @@ mail_port: 587
 mail_username: "you@example.com"
 mail_password: "CHANGE_ME"
 mail_from: "you@example.com"
+# false only for a local relay without usable TLS, e.g. Postfix on the
+# Docker host: mail_server "172.17.0.1", mail_port 25, empty username/password.
+# mail_tls: true
 
 # The first server-admin account, created at deploy time. Use "Forgot password"
 # to set your own password afterwards.

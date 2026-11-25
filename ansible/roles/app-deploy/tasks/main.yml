@@ -299,6 +299,7 @@
     -e MAIL_USERNAME="{{ mail_username | default('') }}"
     -e MAIL_PASSWORD="{{ mail_password | default('') }}"
     -e MAIL_FROM="{{ mail_from | default(mail_username | default('')) }}"
+    -e MAIL_TLS="{{ mail_tls | default(true) | lower }}"
     api
     python /app/scripts/create_admin_invitation.py
   args:

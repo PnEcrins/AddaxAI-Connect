@@ -163,6 +163,7 @@ services:
       MAIL_USERNAME: ${MAIL_USERNAME}
       MAIL_PASSWORD: ${MAIL_PASSWORD}
       MAIL_FROM: ${MAIL_FROM}
+      MAIL_TLS: ${MAIL_TLS:-true}
       DOMAIN_NAME: ${DOMAIN_NAME}
       ENABLE_SSL: ${ENABLE_SSL:-true}
       SENSINGCLUES_BASE_URL: ${SENSINGCLUES_BASE_URL:-https://central.sensingclues.org/v1/}
@@ -477,6 +478,7 @@ services:
       MAIL_USERNAME: ${MAIL_USERNAME}
       MAIL_PASSWORD: ${MAIL_PASSWORD}
       MAIL_FROM: ${MAIL_FROM}
+      MAIL_TLS: ${MAIL_TLS:-true}
       DOMAIN_NAME: ${DOMAIN_NAME}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LOG_FORMAT: ${LOG_FORMAT:-json}
